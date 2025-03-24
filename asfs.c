@@ -240,11 +240,11 @@ void format_disk(int zero_fill, uint32_t block_size) {
     	return;
     }
     //temp!!!!
-    if (ftruncate(disk_fd, 1024 * 1024) == -1) {
+    /*if (ftruncate(disk_fd, 1024 * 1024) == -1) {
         perror("Ошибка установки размера файла");
         close(disk_fd);
         return;
-    }
+    }*/
 
     fstat(disk_fd, &dev_stat);
     if (block_size % 512 != 0 || block_size < 512) {
@@ -294,6 +294,63 @@ void format_disk(int zero_fill, uint32_t block_size) {
 	}
     printf("Device formatted with %u byte blocks\n", block_size);
     close(disk_fd);
+}
+void delete_snapshot(const char* snap_name) {
+    disk_fd = open(DEVICE_PATH, O_RDWR);
+    load_metadata();
+
+    int found_index = -1;
+    Snapshot target_snap;
+
+    // Поиск снапшота по имени
+    for (int i = 0; i < sb.snapshot_count; i++) {
+        if (strcmp(snapshots[i].snapshot_name, snap_name) == 0) {
+            found_index = i;
+            target_snap = snapshots[i];
+            break;
+        }
+    }
+
+    if (found_index == -1) {
+        printf("Snapshot '%s' not found\n", snap_name);
+        close(disk_fd);
+        return;
+    }
+
+    // 1. Освобождаем inode снапшота
+    Inode snap_inode;
+    lseek(disk_fd, sizeof(SuperBlock) + target_snap.snapshot_inode * sizeof(Inode), SEEK_SET);
+    read(disk_fd, &snap_inode, sizeof(Inode));
+
+    // Освобождаем блоки данных
+    uint32_t blocks_count = (snap_inode.size + sb.block_size - 1) / sb.block_size;
+    free_blocks(snap_inode.blocks, blocks_count);
+
+    // Освобождаем inode в битовой карте
+    uint32_t inode_byte = target_snap.snapshot_inode / 8;
+    uint8_t inode_bit = 1 << (target_snap.snapshot_inode % 8);
+    inode_bitmap[inode_byte] &= ~inode_bit;
+    sb.free_inodes++;
+
+    // 2. Обновляем оригинальный файл
+    Inode orig_inode;
+    lseek(disk_fd, sizeof(SuperBlock) + target_snap.original_inode * sizeof(Inode), SEEK_SET);
+    read(disk_fd, &orig_inode, sizeof(Inode));
+    orig_inode.snapshot_count--;
+    lseek(disk_fd, sizeof(SuperBlock) + target_snap.original_inode * sizeof(Inode), SEEK_SET);
+    write(disk_fd, &orig_inode, sizeof(Inode));
+
+    // 3. Удаляем из массива снапшотов
+    memmove(&snapshots[found_index],
+           &snapshots[found_index + 1],
+           (sb.snapshot_count - found_index - 1) * sizeof(Snapshot));
+    sb.snapshot_count--;
+
+    // 4. Сохраняем изменения
+    save_metadata();
+    close(disk_fd);
+
+    printf("Snapshot '%s' deleted successfully\n", snap_name);
 }
 void create_file(const char* filename, const void* data) {
     disk_fd = open(DEVICE_PATH, O_RDWR);
@@ -816,7 +873,7 @@ int main(int argc, char *argv[]) {
     int zero_fill = 0;
     uint32_t block_size = 4096;
     char *filename = NULL, *data = NULL, *snap_name = NULL;
-    while ((opt = getopt(argc, argv, "0b:f:lc:s:r:e:d:phq:w")) != -1) {
+    while ((opt = getopt(argc, argv, "0b:f:lc:s:r:e:d:phq:wx:")) != -1) {
         switch (opt) {
             case 'b': block_size = atoi(optarg); break;
             case 'f': {
@@ -836,6 +893,7 @@ int main(int argc, char *argv[]) {
             case 'd': delete_file(optarg); return 0;
             case 'p': print_fs_info(); return 0;
             case 'q': print_file_content(optarg); return 0;
+            case 'x': delete_snapshot(optarg); return 0;
             case 'h':
             default:
                 printf("Usage: %s [options]\n"
@@ -850,6 +908,7 @@ int main(int argc, char *argv[]) {
                        "  -r <f> <n>   Restore snapshot\n"
                        "  -e <f> <d>   Edit file\n"
                        "  -d <f>       Delete file\n"
+                	   "  -x <f>       Delete snapshot\n"
                        "  -p           Print FS info\n",
                        argv[0]);
                 return 0;
