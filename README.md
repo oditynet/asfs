@@ -20,5 +20,6 @@ Usage: ./asfs [options]
   -r <f> <n>   Restore snapshot
   -e <f> <d>   Edit file
   -d <f>       Delete file
+  -x <f>       Delete snapshot
   -p           Print FS info
 ```
